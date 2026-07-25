@@ -30,4 +30,11 @@ The `smoke:pi` command packs the project, installs it in an isolated temporary e
 
 See [Validation and security checks](docs/validation.md) for the complete local and GitHub Actions baseline.
 
+## Project policy
+
+- [Contributing](CONTRIBUTING.md) — development workflow, review, and merge criteria
+- [Governance](docs/governance.md) — ownership, compatibility, milestones, and releases
+- [Security](SECURITY.md) — private vulnerability reporting and supported versions
+- [MIT License](LICENSE) — permissions and conditions
+
 Generated CocoIndex data under `.cocoindex_code/` is local tooling state and is not committed.
