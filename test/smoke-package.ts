@@ -34,6 +34,8 @@ try {
   }
 
   const tarball = join(temporaryRoot, filename);
+  // The path is rooted in the freshly created process-owned temporary directory.
+  // eslint-disable-next-line security/detect-non-literal-fs-filename
   writeFileSync(
     join(temporaryRoot, "package.json"),
     `${JSON.stringify(
@@ -55,6 +57,8 @@ try {
   });
 
   const agentDirectory = join(temporaryRoot, "agent");
+  // The path is rooted in the freshly created process-owned temporary directory.
+  // eslint-disable-next-line security/detect-non-literal-fs-filename
   mkdirSync(agentDirectory);
   const piCli = join(
     temporaryRoot,
