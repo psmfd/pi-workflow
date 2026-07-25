@@ -22,8 +22,12 @@ Install dependencies and run the local quality gates:
 npm ci
 npm run check
 npm run smoke:pi
+npm run test:coverage
+npm run security
 ```
 
-The `smoke:pi` command asks the installed pi CLI to discover this repository as a local package and fails if the extension cannot be loaded.
+The `smoke:pi` command packs the project, installs it in an isolated temporary environment, and verifies that pi executes the packaged extension factory. Validation runs without loading the operator's extensions or settings.
+
+See [Validation and security checks](docs/validation.md) for the complete local and GitHub Actions baseline.
 
 Generated CocoIndex data under `.cocoindex_code/` is local tooling state and is not committed.
