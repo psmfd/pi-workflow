@@ -30,6 +30,17 @@ npm run security
 
 Pull requests to `dev` or `main` run validation on Linux, macOS, and Windows with Node.js 22.19. A separate job reports test coverage. Security automation adds dependency review and CodeQL analysis, while Dependabot monitors both npm and GitHub Actions dependencies.
 
+The protected `dev` branch requires these six pull-request check contexts:
+
+- `validate (ubuntu-latest)`
+- `validate (macos-latest)`
+- `validate (windows-latest)`
+- `coverage`
+- `dependency-review`
+- `codeql`
+
+Renaming a job requires a coordinated ruleset update so the branch is not left unprotected or locked by a stale context.
+
 Every external GitHub Action is pinned to a full commit SHA. Docker actions, if introduced, must use a full `sha256` digest. The adjacent version comment records the reviewed upstream tag; automated updates must preserve immutable pinning.
 
 ## Exit behavior

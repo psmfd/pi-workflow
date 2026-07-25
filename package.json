@@ -2,6 +2,7 @@
   "name": "@psmfd/pi-workflow",
   "version": "0.0.0-development",
   "description": "Deterministic typed workflow extension for pi",
+  "license": "MIT",
   "type": "module",
   "private": true,
   "keywords": [

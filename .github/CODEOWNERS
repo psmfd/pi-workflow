@@ -1,0 +1,16 @@
+# Default ownership
+* @TheSemicolon
+
+# Governance and security policy
+/.github/CODEOWNERS @TheSemicolon
+/CONTRIBUTING.md @TheSemicolon
+/SECURITY.md @TheSemicolon
+/LICENSE @TheSemicolon
+/docs/governance.md @TheSemicolon
+
+# Build, validation, dependency, and release-control surfaces
+/.github/workflows/ @TheSemicolon
+/.github/dependabot.yml @TheSemicolon
+/scripts/ @TheSemicolon
+/package.json @TheSemicolon
+/package-lock.json @TheSemicolon
