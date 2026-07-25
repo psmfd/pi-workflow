@@ -22,6 +22,8 @@ npm run security
 6. Exact dependency-policy validation.
 7. Authored-file secret-pattern scanning.
 
+`npm test` includes subprocess acceptance coverage for the supported subagent invocation seam. A scripted fake pi executable exercises command construction, JSONL framing, failure classification, cancellation, deadlines, and termination escalation without loading a model or making network calls.
+
 `npm run smoke:pi` packs the package, installs it with production semantics in an isolated temporary directory, and verifies that pi executes the packaged extension factory. The child pi process runs offline without user extensions, tools, approval files, or a persisted session.
 
 `npm run security` repeats dependency-policy and secret checks, blocks critical vulnerabilities across the complete development graph, and then applies zero-tolerance auditing to production dependencies. Lower-severity development findings remain visible in audit output and are tracked through repository-enabled Dependabot alerts and security updates. Dependency review prevents new high-severity vulnerable packages from entering through pull requests; CodeQL covers source-level vulnerabilities and is not treated as dependency-CVE analysis. The baseline never rewrites the lockfile with `npm audit fix`.

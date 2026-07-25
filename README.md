@@ -30,6 +30,10 @@ The `smoke:pi` command packs the project, installs it in an isolated temporary e
 
 See [Validation and security checks](docs/validation.md) for the complete local and GitHub Actions baseline.
 
+## Architecture decisions
+
+- [ADR 0001: Supported subagent invocation seam](docs/adr/0001-supported-subagent-invocation-seam.md) — isolates one-shot pi JSON subprocesses behind a typed package-owned invoker.
+
 ## Project policy
 
 - [Contributing](CONTRIBUTING.md) — development workflow, review, and merge criteria
