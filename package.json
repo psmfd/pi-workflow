@@ -1,0 +1,45 @@
+{
+  "name": "@psmfd/pi-workflow",
+  "version": "0.0.0-development",
+  "description": "Deterministic typed workflow extension for pi",
+  "type": "module",
+  "private": true,
+  "keywords": [
+    "pi-package",
+    "pi-extension",
+    "workflow",
+    "code-review"
+  ],
+  "engines": {
+    "node": ">=22.19.0"
+  },
+  "files": [
+    "src",
+    "README.md"
+  ],
+  "pi": {
+    "extensions": [
+      "./src/index.ts"
+    ]
+  },
+  "scripts": {
+    "test": "tsx --test test/**/*.test.ts",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint src test --max-warnings 0",
+    "check": "npm run typecheck && npm run lint && npm test",
+    "smoke:pi": "tsx test/smoke-package.ts"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*"
+  },
+  "devDependencies": {
+    "@earendil-works/pi-coding-agent": "0.81.1",
+    "@eslint/js": "9.17.0",
+    "@types/node": "22.10.5",
+    "eslint": "9.17.0",
+    "tsx": "4.19.2",
+    "typebox": "1.1.38",
+    "typescript": "5.6.3",
+    "typescript-eslint": "8.19.1"
+  }
+}

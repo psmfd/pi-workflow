@@ -1,0 +1,10 @@
+# Dependencies and package artifacts
+node_modules/
+coverage/
+*.tgz
+
+# Local tooling state
+.cocoindex_code/
+
+# Operating-system metadata
+.DS_Store
