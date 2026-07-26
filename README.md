@@ -32,7 +32,9 @@ See [Validation and security checks](docs/validation.md) for the complete local 
 
 ## Architecture decisions
 
+- [Runtime contracts](docs/runtime-contracts.md) — versioned workflow, journal, scope, evidence, transition, recovery, and compatibility contracts.
 - [ADR 0001: Supported subagent invocation seam](docs/adr/0001-supported-subagent-invocation-seam.md) — isolates one-shot pi JSON subprocesses behind a typed package-owned invoker.
+- [ADR 0002: Deterministic workflow runtime](docs/adr/0002-deterministic-workflow-runtime.md) — selects typed definitions and an append-only event journal.
 
 ## Project policy
 
