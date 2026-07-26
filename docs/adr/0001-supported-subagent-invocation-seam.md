@@ -55,6 +55,8 @@ pi --mode json -p --no-session \
 
 The process is started without a shell. Context files, skills, prompt templates, and automatic extension discovery are disabled so repository-authored or ambient resources cannot silently alter the child contract. Required extensions must be supplied as absolute host-approved paths, are canonicalized before dispatch, and are loaded explicitly. Project trust remains an explicit request field for the remaining project settings boundary. Tool capabilities are an explicit allowlist; an empty list becomes `--no-tools` rather than pi's default tools. Environment values are host-owned adapter configuration and cannot be supplied by workflow or agent input. The adapter forwards only runtime essentials, credentials associated with the selected provider, and additional keys explicitly approved by the host. Forwarded `PATH` entries are restricted to absolute host directories.
 
+Successful dispatch is established only when Node emits the child `spawn` event. An `error` observed before `spawn` is a retryable dispatch failure. An `error` observed after `spawn` is an execution failure; read-only work may remain retryable after confirmed termination, while mutating work becomes non-retryable and `indeterminate` because its effects are unknown.
+
 A successful invocation requires all of the following:
 
 - the JSON stream begins with a pi session header;
@@ -72,7 +74,7 @@ The invoker accepts an `AbortSignal` and an absolute persisted deadline with an 
 
 On POSIX, the child starts in a dedicated process group. Cancellation or deadline expiry signals that group with `SIGTERM`, then escalates to `SIGKILL` after a bounded grace period. On Windows, the adapter uses the absolute system `taskkill.exe` path with `/T /F` to terminate the process tree, requires a zero exit status, and then polls the target PID until it disappears. A nonzero tree-kill result remains unconfirmed even if the root PID vanished because descendants cannot then be proven terminated. A second bounded confirmation period prevents indefinite waiting. Deadline, grace, and confirmation timers remain referenced until the invocation settles because the returned promise depends on them; unreferenced lifecycle timers can let Node terminate with an unresolved invocation. A cancelled or timed-out outcome is returned only after tracked process-tree termination is confirmed; otherwise the result is `indeterminate`. This is process-tree lifecycle control, not an OS sandbox, and cannot constrain a descendant that deliberately escapes its process group or job ancestry.
 
-The first observed control event wins: completion before cancellation remains completion; cancellation or timeout requested before process closure determines the terminal control outcome. Late child output cannot convert a cancelled or timed-out invocation into success.
+The first observed terminal cause wins: completion before cancellation, timeout, or process error remains completion; cancellation or timeout requested before process closure determines the terminal control outcome; and a post-dispatch process error observed first remains an execution failure. A child `error` caused by termination cannot replace an already-observed cancellation or timeout. Late child output cannot convert a cancelled, timed-out, or process-failed invocation into success.
 
 ### Resumability and retries
 
@@ -82,7 +84,7 @@ Exactly-once agent execution is not promised. The target guarantee is at most on
 
 ### Handoff and evidence
 
-Assistant output is an untrusted claim, not verified evidence. The adapter records host-observed process status, only the bounded byte count of omitted stderr, projected pi event metadata, usage, model, stop reason, invocation identity, attempt, input digest, adapter version, and the command shape with task content and temporary paths redacted. Child-authored stderr and error-message contents are excluded from durable outcomes because no generic redactor can prove that credentials loaded from files or tools were removed. Schema validation and stronger evidence attestation belong to issue #13. A mutating invocation with a post-dispatch cancellation, timeout, protocol failure, process failure, or agent failure becomes non-retryable and `indeterminate` because side effects may already have occurred.
+Assistant output is an untrusted claim, not verified evidence. The adapter records host-observed process status, only the bounded byte count of omitted stderr, projected pi event metadata, usage, model, stop reason, invocation identity, attempt, input digest, adapter version, and the command shape with task content and temporary paths redacted. Child-authored stderr and error-message contents are excluded from durable outcomes because no generic redactor can prove that credentials loaded from files or tools were removed. Schema validation and stronger evidence attestation belong to issue #13. A mutating invocation with a post-dispatch cancellation, timeout, child-process error, protocol failure, process failure, or agent failure becomes non-retryable and `indeterminate` because side effects may already have occurred.
 
 ### Security boundary
 
@@ -127,7 +129,7 @@ Pi's subagent example validates the subprocess approach, but combining discovery
 
 ## Validation
 
-Acceptance tests use a scripted child process and cover command construction, empty tool allowlists, isolated resource loading, chunked LF and CRLF framing, unknown events, malformed or unterminated streams, aggregate stream bounds, missing terminal output, agent and process failures, spawn failure, pre-dispatch cancellation, absolute and long deadlines, mutating uncertainty, provider-scoped environment filtering, absolute `PATH` normalization, explicit extension loading, diagnostic omission, automatic-retry lifecycle handling, process-tree cancellation, and forced termination. Tests run offline and do not invoke a model provider.
+Acceptance tests use a scripted child process and an injected host-owned root-process seam. They cover command construction, empty tool allowlists, isolated resource loading, chunked LF and CRLF framing, unknown events, malformed or unterminated streams, aggregate stream bounds, missing terminal output, agent and process failures, pre-spawn versus post-spawn errors, first-cause ordering, pre-dispatch cancellation, absolute and long deadlines, mutating uncertainty, provider-scoped environment filtering, absolute `PATH` normalization, explicit extension loading, diagnostic omission, automatic-retry lifecycle handling, process-tree cancellation, and forced termination. Tests run offline and do not invoke a model provider.
 
 ## Follow-up decisions
 

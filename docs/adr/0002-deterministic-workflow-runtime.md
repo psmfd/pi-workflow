@@ -143,4 +143,5 @@ Contract tests cover accepted and bounded definitions, unsupported versions, unk
 - Issue #13 implements evidence validation and retry execution policy.
 - Issue #14 registers workflow commands and progress presentation.
 - Issue #17 implements the `/review` compatibility wrapper and migration tests.
-- Issue #28 aligns post-dispatch child-process error classification with mutating uncertainty before runtime retry execution ships.
+
+Issue #28 aligned post-dispatch child-process errors with mutating uncertainty before runtime retry execution shipped.

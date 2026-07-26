@@ -56,6 +56,7 @@ export {
   PiProcessInvoker,
   type PiCommand,
   type PiProcessInvokerOptions,
+  type RootProcessSpawner,
 } from "./subagent/pi-process-invoker.js";
 
 /** Public contract version for the package entrypoint. */
