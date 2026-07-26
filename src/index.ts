@@ -7,7 +7,10 @@ export {
   type RetryableOutcome,
   type WorkflowArtifactReference,
   type WorkflowAttemptOutcome,
+  type WorkflowAttemptRecoveryResolution,
   type WorkflowAttemptState,
+  type WorkflowCancellationReason,
+  type WorkflowCancellationState,
   type WorkflowDefinition,
   type WorkflowEvent,
   type WorkflowEvidenceReference,
@@ -15,6 +18,7 @@ export {
   type WorkflowFailureSummary,
   type WorkflowInvocationAuthorization,
   type WorkflowInvocationDefinition,
+  type WorkflowJournalActor,
   type WorkflowJournalEnvelope,
   type WorkflowRecoveryDecision,
   type WorkflowRetryPolicy,
@@ -24,6 +28,7 @@ export {
   type WorkflowRuntimeContractVersion,
   type WorkflowScopeKind,
   type WorkflowStepDefinition,
+  type WorkflowStepSettlement,
   type WorkflowStepState,
   type WorkflowStepStatus,
 } from "./runtime/contracts.js";
@@ -40,6 +45,31 @@ export {
   type ContractViolation,
   type WorkflowJournalParseResult,
 } from "./runtime/validation.js";
+export {
+  deriveWorkflowRecoveryDecisions,
+  reduceWorkflowJournalEnvelope,
+  type WorkflowReductionError,
+  type WorkflowReductionErrorCode,
+  type WorkflowReductionResult,
+} from "./runtime/reducer.js";
+export {
+  replayWorkflowJournal,
+  type WorkflowReplayError,
+  type WorkflowReplayResult,
+} from "./runtime/replay.js";
+export {
+  FileWorkflowJournalStore,
+  MAX_WORKFLOW_JOURNAL_BYTES,
+  MAX_WORKFLOW_JOURNAL_RECORDS,
+  type FileWorkflowJournalStoreOptions,
+  type WorkflowJournalAppendResult,
+  type WorkflowJournalCommitReceipt,
+  type WorkflowJournalError,
+  type WorkflowJournalErrorCode,
+  type WorkflowJournalLoadResult,
+  type WorkflowJournalSnapshot,
+  type WorkflowJournalStore,
+} from "./runtime/journal.js";
 
 export {
   SUBAGENT_INVOCATION_CONTRACT_VERSION,

@@ -42,7 +42,7 @@ The v1 schema is published in [`src/runtime/contracts.ts`](../../src/runtime/con
 
 ### Deterministic state and transitions
 
-The reducer planned in issue #11 will be a pure function of a previous state and one validated `WorkflowJournalEnvelope`. It must not read the clock, filesystem, Git, process state, environment, or model output. Nondeterministic observations enter through explicit events.
+The reducer implemented by issue #11 is a pure function of a previous state and one validated `WorkflowJournalEnvelope`. It does not read the clock, filesystem, Git, process state, environment, or model output. Nondeterministic observations enter through explicit events. The reduced state retains the immutable definition so dependency and retry invariants remain available without hidden replay context.
 
 Run and step terminal states are monotonic. A terminal state cannot return to a running state. A running step may return to `ready` only when a new attempt is permitted by validated policy; the prior attempt remains settled and immutable. Failed dependencies make downstream steps `blocked` rather than silently skipping them.
 
@@ -50,9 +50,9 @@ Journal sequence numbers are positive and contiguous within a run. Event identif
 
 ### Write-ahead side-effect boundary
 
-Events that authorize an external effect are persisted before that effect begins. In particular, `attemptPlanned` records the invocation identity, attempt number, input digest, absolute deadline, and host authorization before dispatch. `attemptStarted` records the dispatch boundary. `attemptSettled` records a minimized typed terminal outcome projected from `SubagentInvoker`; it excludes assistant output, child error messages, and raw adapter evidence.
+Events that authorize an external effect are persisted before that effect begins. In particular, `attemptPlanned` records the invocation identity, attempt number, input digest, absolute deadline, and host authorization before dispatch. `attemptStarted` records the dispatch boundary. `attemptSettled` records only the attempt observation; it does not guess whether evidence or retry policy settles the step. The later `stepSettled` event records the explicit policy decision, and successful settlement names the qualifying evidence IDs. Minimized outcomes exclude assistant output, child error messages, and raw adapter evidence.
 
-An implementation may also persist derived snapshots for faster loading, but a snapshot is only a cache of a validated journal prefix. The journal remains authoritative, and snapshot metadata must name the last included sequence and contract version.
+Every envelope attributes the intent to a bounded runtime or operator actor. [ADR 0003](0003-file-backed-workflow-journal-durability.md) defines the synchronized file-store commit protocol used by issue #11. An implementation may also persist derived snapshots for faster loading, but a snapshot is only a cache of a validated journal prefix. The journal remains authoritative, and snapshot metadata must name the last included sequence and contract version.
 
 ### Scope and evidence
 
@@ -86,6 +86,9 @@ Resume validates every journal envelope, checks contract compatibility, verifies
 | Planned but not started | Dispatch the same fenced attempt if its absolute deadline remains valid |
 | Read-only attempt started without outcome | Journal `attemptRecoveryRequired`; resolve it before policy may create a new attempt |
 | Mutating attempt started without outcome | Journal recovery requirement and await manual resolution; never retry automatically |
+| Recovery resolved `safeToRetry` | Record explicit step readiness before planning another attempt |
+| Recovery resolved `abort` | Record an explicit indeterminate step settlement |
+| Cancellation with a planned attempt | Record pre-dispatch attempt cancellation; never dispatch it |
 | Unsupported contract or invalid journal | Refuse resume without executing effects |
 
 Exactly-once execution is not promised. The contract provides at most one active fenced attempt, durable intent before dispatch, replay of completed outcomes, and explicit uncertainty after an interrupted effect.
@@ -134,11 +137,11 @@ Pi sessions are adapter state, may contain sensitive conversation content, and a
 
 ## Validation
 
-Contract tests cover accepted and bounded definitions, unsupported versions, unknown fields, strict scope validation, duplicate and missing dependencies, iterative cycle detection, invalid automatic retries, strict absolute timestamps, minimized outcomes, protected artifact references, durable recovery events, fenced attempt identity, legal transitions, and terminal-state monotonicity. Issue #11 adds reducer replay and journal persistence tests; issues #12 and #13 add canonical identity and evidence-policy tests.
+Contract tests cover accepted and bounded definitions, unsupported versions, unknown fields, strict scope validation, duplicate and missing dependencies, iterative cycle detection, invalid automatic retries, strict absolute timestamps, minimized outcomes, protected artifact references, durable recovery events, fenced attempt identity, legal transitions, and terminal-state monotonicity. Issue #11 adds reducer, replay, recovery, journal persistence, locking, corruption, and resume tests; issues #12 and #13 add canonical identity and evidence-policy tests.
 
 ## Follow-up decisions
 
-- Issue #11 implements the reducer and journal persistence behind these contracts.
+- Issue #11 implements the reducer and journal persistence behind these contracts; ADR 0003 defines its physical durability boundary.
 - Issue #12 defines canonical scope and evidence identity algorithms.
 - Issue #13 implements evidence validation and retry execution policy.
 - Issue #14 registers workflow commands and progress presentation.

@@ -7,7 +7,7 @@ Deterministic typed workflow extension for [pi](https://github.com/earendil-work
 
 ## Package status
 
-This repository is the canonical source for `@psmfd/pi-workflow`. The current package exports a loadable TypeScript pi extension entrypoint; workflow runtime features will be added through the ordered issue roadmap.
+This repository is the canonical source for `@psmfd/pi-workflow`. The package exports a loadable TypeScript pi extension entrypoint, versioned workflow contracts, a pure reducer and replay engine, and a synchronized file-backed run journal. Workflow commands and concrete review definitions remain on the ordered issue roadmap.
 
 ## Development
 
@@ -35,6 +35,7 @@ See [Validation and security checks](docs/validation.md) for the complete local 
 - [Runtime contracts](docs/runtime-contracts.md) — versioned workflow, journal, scope, evidence, transition, recovery, and compatibility contracts.
 - [ADR 0001: Supported subagent invocation seam](docs/adr/0001-supported-subagent-invocation-seam.md) — isolates one-shot pi JSON subprocesses behind a typed package-owned invoker.
 - [ADR 0002: Deterministic workflow runtime](docs/adr/0002-deterministic-workflow-runtime.md) — selects typed definitions and an append-only event journal.
+- [ADR 0003: File-backed workflow journal durability](docs/adr/0003-file-backed-workflow-journal-durability.md) — defines locking, replay, corruption, and synchronized commit semantics.
 
 ## Project policy
 
