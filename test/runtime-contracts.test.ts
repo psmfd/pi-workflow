@@ -90,6 +90,7 @@ void test("journal schema requires absolute timestamps and fenced attempt identi
     runId: "run-1",
     sequence: 3,
     occurredAt: "2026-07-25T22:27:59Z",
+    actor: { kind: "runtime", actorId: "runtime-1" },
     event: {
       eventId: "event-3",
       type: "attemptSettled",
@@ -136,6 +137,7 @@ void test("run creation validates scope fields and pull-request invariants stric
     runId: "run-1",
     sequence: 1,
     occurredAt: "2026-07-25T22:27:59.123Z",
+    actor: { kind: "runtime", actorId: "runtime-1" },
     event: {
       eventId: "event-1",
       type: "runCreated",
@@ -168,6 +170,7 @@ void test("settled outcomes are minimized, strict, and fully fenced", () => {
     runId: "run-1",
     sequence: 4,
     occurredAt: "2026-07-25T22:27:59+00:00",
+    actor: { kind: "runtime", actorId: "runtime-1" },
     event: {
       eventId: "event-4",
       type: "attemptSettled",
@@ -200,6 +203,7 @@ void test("evidence creation stores only fenced references to protected artifact
     runId: "run-1",
     sequence: 5,
     occurredAt: "2026-07-25T22:27:59Z",
+    actor: { kind: "runtime", actorId: "runtime-1" },
     event: {
       eventId: "event-5",
       type: "evidenceRecorded",
@@ -237,6 +241,7 @@ void test("recovery is represented durably before interrupted attempts proceed",
     runId: "run-1",
     sequence: 6,
     occurredAt: "2026-07-25T22:27:59Z",
+    actor: { kind: "runtime", actorId: "runtime-1" },
     event: {
       eventId: "event-6",
       type: "attemptRecoveryRequired",
@@ -249,6 +254,68 @@ void test("recovery is represented durably before interrupted attempts proceed",
     },
   };
   assert.deepEqual(WORKFLOW_JOURNAL_ENVELOPE_SCHEMA.validate(envelope), []);
+});
+
+void test("actor, step settlement, and recovery resolution are strict and outcome-fenced", () => {
+  const settlement = {
+    contractVersion: WORKFLOW_RUNTIME_CONTRACT_VERSION,
+    runId: "run-1",
+    sequence: 7,
+    occurredAt: "2026-07-25T22:27:59Z",
+    actor: { kind: "operator", actorId: "operator-1" },
+    event: {
+      eventId: "event-7",
+      type: "stepSettled",
+      stepId: "review",
+      settlement: {
+        status: "succeeded",
+        invocationId: "invocation-1",
+        attempt: 1,
+        inputDigest: "input-1",
+        evidenceIds: ["evidence-1"],
+      },
+    },
+  };
+  assert.deepEqual(WORKFLOW_JOURNAL_ENVELOPE_SCHEMA.validate(settlement), []);
+  settlement.event.settlement.evidenceIds.push("evidence-1");
+  assert.ok(WORKFLOW_JOURNAL_ENVELOPE_SCHEMA.validate(settlement).some(
+    ({ path }) => path === "$.event.settlement.evidenceIds",
+  ));
+
+  const recovery = {
+    contractVersion: WORKFLOW_RUNTIME_CONTRACT_VERSION,
+    runId: "run-1",
+    sequence: 8,
+    occurredAt: "2026-07-25T22:28:00Z",
+    actor: { kind: "operator", actorId: "operator-1" },
+    event: {
+      eventId: "event-8",
+      type: "attemptRecoveryResolved",
+      stepId: "review",
+      attempt: 1,
+      invocationId: "invocation-1",
+      inputDigest: "input-1",
+      resolution: {
+        kind: "outcomeConfirmed",
+        outcome: {
+          status: "succeeded",
+          attempt: 1,
+          invocationId: "invocation-1",
+          inputDigest: "input-1",
+        },
+      },
+    },
+  };
+  assert.deepEqual(WORKFLOW_JOURNAL_ENVELOPE_SCHEMA.validate(recovery), []);
+  recovery.event.resolution.outcome.invocationId = "stale";
+  assert.ok(WORKFLOW_JOURNAL_ENVELOPE_SCHEMA.validate(recovery).some(
+    ({ path }) => path === "$.event.resolution.outcome.invocationId",
+  ));
+
+  delete (recovery as { actor?: unknown }).actor;
+  assert.ok(WORKFLOW_JOURNAL_ENVELOPE_SCHEMA.validate(recovery).some(
+    ({ path }) => path === "$.actor",
+  ));
 });
 
 void test("definition bounds reject oversized workflow graphs before traversal", () => {
@@ -272,6 +339,7 @@ void test("validation returns violations for hostile enum values instead of thro
     runId: "run-1",
     sequence: 4,
     occurredAt: "2026-07-25T22:27:59Z",
+    actor: { kind: "runtime", actorId: "runtime-1" },
     event: {
       eventId: "event-4",
       type: "attemptSettled",

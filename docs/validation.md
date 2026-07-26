@@ -22,7 +22,7 @@ npm run security
 6. Exact dependency-policy validation.
 7. Authored-file secret-pattern scanning.
 
-`npm test` includes subprocess acceptance coverage for the supported subagent invocation seam. A scripted fake pi executable exercises command construction, JSONL framing, failure classification, cancellation, deadlines, and termination escalation without loading a model or making network calls.
+`npm test` includes deterministic reducer, replay, recovery, and file-journal coverage plus subprocess acceptance coverage for the supported subagent invocation seam. Journal tests exercise durable reopen, hash-derived paths, competing writers, lock contention, symlink rejection, size bounds, permanent corruption, and torn-tail repair in private temporary directories. A scripted fake pi executable exercises command construction, JSONL framing, failure classification, cancellation, deadlines, and termination escalation without loading a model or making network calls.
 
 `npm run smoke:pi` packs the package, installs it with production semantics in an isolated temporary directory, and verifies that pi executes the packaged extension factory. The child pi process runs offline without user extensions, tools, approval files, or a persisted session.
 

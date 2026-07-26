@@ -7,6 +7,13 @@ export type WorkflowRuntimeContractVersion = typeof WORKFLOW_RUNTIME_CONTRACT_VE
 export type WorkflowExecutionClass = "readOnly" | "mutating";
 export type WorkflowScopeKind = "localChanges" | "pullRequest";
 export type RetryableOutcome = "failed" | "cancelled" | "timedOut";
+export type WorkflowCancellationReason = "operatorRequested" | "hostShutdown" | "superseded";
+
+/** Attribution is deliberately bounded metadata, never free-form model output. */
+export interface WorkflowJournalActor {
+  readonly kind: "runtime" | "operator";
+  readonly actorId: string;
+}
 
 /** A typed workflow is authored in TypeScript and may be constructed dynamically. */
 export interface WorkflowDefinition {
@@ -101,6 +108,11 @@ export type WorkflowAttemptOutcome =
       readonly acknowledged: true;
     };
 
+export type WorkflowAttemptRecoveryResolution =
+  | { readonly kind: "outcomeConfirmed"; readonly outcome: WorkflowAttemptOutcome }
+  | { readonly kind: "safeToRetry" }
+  | { readonly kind: "abort" };
+
 export interface WorkflowAttemptState {
   readonly attempt: number;
   readonly invocationId: string;
@@ -110,13 +122,52 @@ export interface WorkflowAttemptState {
   readonly authorization: WorkflowInvocationAuthorization;
   readonly status: "planned" | "running" | "recoveryRequired" | "settled";
   readonly outcome?: WorkflowAttemptOutcome;
+  readonly recoveryResolution?: WorkflowAttemptRecoveryResolution;
 }
+
+export type WorkflowStepSettlement =
+  | {
+      readonly status: "succeeded";
+      readonly invocationId: string;
+      readonly attempt: number;
+      readonly inputDigest: string;
+      readonly evidenceIds: readonly [string, ...string[]];
+    }
+  | {
+      readonly status: "failed";
+      readonly invocationId: string;
+      readonly attempt: number;
+      readonly inputDigest: string;
+      readonly reason: "attemptOutcome" | "retryDeclined";
+    }
+  | {
+      readonly status: "indeterminate";
+      readonly invocationId: string;
+      readonly attempt: number;
+      readonly inputDigest: string;
+      readonly reason: "attemptOutcome" | "recoveryAborted";
+    }
+  | {
+      readonly status: "cancelled";
+      readonly reason: WorkflowCancellationReason;
+    }
+  | {
+      readonly status: "blocked";
+      readonly blockedBy: string;
+    };
 
 export interface WorkflowStepState {
   readonly stepId: string;
   readonly status: WorkflowStepStatus;
   readonly attempts: readonly WorkflowAttemptState[];
   readonly evidence: readonly WorkflowEvidenceReference[];
+  readonly settlement?: WorkflowStepSettlement;
+}
+
+export interface WorkflowCancellationState {
+  readonly reason: WorkflowCancellationReason;
+  readonly requestedAtSequence: number;
+  readonly actor: WorkflowJournalActor;
 }
 
 export interface WorkflowRunState {
@@ -124,10 +175,13 @@ export interface WorkflowRunState {
   readonly runId: string;
   readonly workflowId: string;
   readonly definitionDigest: string;
+  readonly definition: WorkflowDefinition;
   readonly scope: WorkflowRunScope;
   readonly status: WorkflowRunStatus;
+  readonly cancellation?: WorkflowCancellationState;
   /** Definition order is retained to make serialization and presentation stable. */
   readonly steps: readonly WorkflowStepState[];
+  readonly processedEventIds: readonly string[];
   readonly lastSequence: number;
 }
 
@@ -213,9 +267,10 @@ export type WorkflowEvent =
       readonly attempt: number;
       readonly invocationId: string;
       readonly inputDigest: string;
-      readonly resolution: "effectConfirmed" | "safeToRetry" | "abort";
+      readonly resolution: WorkflowAttemptRecoveryResolution;
     })
-  | (WorkflowEventBase & { readonly type: "cancellationRequested"; readonly reason: string })
+  | (WorkflowEventBase & { readonly type: "stepSettled"; readonly stepId: string; readonly settlement: WorkflowStepSettlement })
+  | (WorkflowEventBase & { readonly type: "cancellationRequested"; readonly reason: WorkflowCancellationReason })
   | (WorkflowEventBase & {
       readonly type: "runSettled";
       readonly status: Exclude<WorkflowRunStatus, "pending" | "running">;
@@ -227,28 +282,42 @@ export interface WorkflowJournalEnvelope {
   readonly runId: string;
   readonly sequence: number;
   readonly occurredAt: string;
+  readonly actor: WorkflowJournalActor;
   readonly event: WorkflowEvent;
 }
 
 export type WorkflowRecoveryDecision =
-  | { readonly action: "replayTerminalOutcome"; readonly invocationId: string; readonly attempt: number }
+  | { readonly action: "replayTerminalOutcome"; readonly stepId: string; readonly invocationId: string; readonly attempt: number }
+  | {
+      readonly action: "recordAttemptCancellation";
+      readonly stepId: string;
+      readonly invocationId: string;
+      readonly attempt: number;
+      readonly inputDigest: string;
+    }
+  | { readonly action: "recordStepReady"; readonly stepId: string }
+  | { readonly action: "recordStepSettlement"; readonly stepId: string; readonly settlement: WorkflowStepSettlement }
   | {
       readonly action: "dispatchAttempt";
+      readonly stepId: string;
       readonly invocationId: string;
       readonly attempt: number;
       readonly deadlineAt?: string;
     }
   | {
       readonly action: "recordRecoveryRequired";
+      readonly stepId: string;
       readonly invocationId: string;
       readonly attempt: number;
       readonly execution: WorkflowExecutionClass;
     }
   | {
       readonly action: "awaitManualResolution";
-      readonly reason: "indeterminateMutation" | "invalidEvidence" | "unsupportedVersion";
-    }
-  | { readonly action: "abortRun"; readonly reason: string };
+      readonly stepId: string;
+      readonly invocationId: string;
+      readonly attempt: number;
+      readonly reason: "indeterminateMutation" | "recoveryRequired";
+    };
 
 /** Compatibility contract retained until issue #17 supplies the migration wrapper. */
 export interface LegacyReviewCompatibility {

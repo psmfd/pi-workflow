@@ -1,6 +1,6 @@
 # Workflow runtime contracts
 
-The workflow runtime owns deterministic scheduling above the nondeterministic subagent invocation seam defined by [ADR 0001](adr/0001-supported-subagent-invocation-seam.md). [ADR 0002](adr/0002-deterministic-workflow-runtime.md) records the runtime decision.
+The workflow runtime owns deterministic scheduling above the nondeterministic subagent invocation seam defined by [ADR 0001](adr/0001-supported-subagent-invocation-seam.md). [ADR 0002](adr/0002-deterministic-workflow-runtime.md) records the runtime decision, and [ADR 0003](adr/0003-file-backed-workflow-journal-durability.md) defines the authoritative file-store boundary.
 
 ## Contract boundary
 
@@ -11,8 +11,13 @@ Version 1 exports package-owned contracts from `@psmfd/pi-workflow`:
 - `WorkflowRunState` and `WorkflowStepState` describe reducer output;
 - `WorkflowJournalEnvelope` and `WorkflowEvent` describe durable input;
 - `WorkflowEvidenceReference` binds evidence to scope and attempt identity;
+- `WorkflowJournalActor` attributes every transition intent;
+- `WorkflowStepSettlement` separates attempt observations from policy decisions;
 - `WorkflowRecoveryDecision` makes resume behavior explicit;
 - `WORKFLOW_DEFINITION_SCHEMA` and `WORKFLOW_JOURNAL_ENVELOPE_SCHEMA` validate untrusted values;
+- `reduceWorkflowJournalEnvelope` and `replayWorkflowJournal` produce deterministic state;
+- `deriveWorkflowRecoveryDecisions` derives restart actions in definition order;
+- `FileWorkflowJournalStore` implements the authoritative synchronized journal;
 - `isLegalRunTransition` and `isLegalStepTransition` publish transition invariants.
 
 These contracts contain only persistable data. Clocks, `AbortSignal`, processes, Git queries, environment values, and pi event objects remain outside reducer state.
@@ -105,7 +110,7 @@ Issue #12 defines canonicalization and digest algorithms. Resume uses the persis
 
 ## Journal and transition semantics
 
-Each journal line is a size-bounded `WorkflowJournalEnvelope` with a contract version, run identifier, positive contiguous sequence number, strict calendar-valid ISO-8601 timestamp with an explicit offset, and one event. Implementations append and durably commit authorization events before starting their corresponding effects.
+Each journal line is a size-bounded `WorkflowJournalEnvelope` with a contract version, run identifier, positive contiguous sequence number, strict calendar-valid ISO-8601 timestamp with an explicit offset, bounded `runtime` or `operator` actor attribution, and one event. Implementations append and durably commit authorization events before starting their corresponding effects.
 
 The initial event is `runCreated`, which captures the validated definition, its digest, and scope. Typical execution then records:
 
@@ -115,9 +120,12 @@ The initial event is `runCreated`, which captures the validated definition, its 
 4. `attemptStarted` immediately before dispatch;
 5. `attemptSettled` with a minimized package-owned outcome containing no assistant output;
 6. `evidenceRecorded` with fenced metadata and an optional protected artifact reference;
-7. `runSettled` after all required steps reach a terminal result.
+7. `stepSettled` after evidence and retry policy select one terminal step result;
+8. `runSettled` after every step reaches a terminal result.
 
-`attemptRecoveryRequired`, `attemptRecoveryResolved`, `evidenceInvalidated`, and `cancellationRequested` are explicit observations rather than hidden state mutations. Unknown event variants and unknown fields fail validation under contract version 1.
+`attemptSettled` never terminalizes a step by itself. Issue #13 evaluates evidence completeness and retry policy, then emits either another `stepReady` or one `stepSettled`. A successful settlement must cite a non-empty, duplicate-free set of previously recorded, currently valid evidence references fenced to the same successful attempt, input, and scope. Failed and indeterminate settlements cite their causal settled attempt; cancellation requires prior matching cancellation intent; blocking names a declared dependency already terminal in a non-success state.
+
+`attemptRecoveryRequired`, `attemptRecoveryResolved`, `evidenceInvalidated`, and `cancellationRequested` are explicit observations rather than hidden state mutations. Recovery resolution is discriminated: `outcomeConfirmed` carries a fully fenced minimized outcome atomically, while `safeToRetry` and `abort` carry no inferred result. Unknown event variants and unknown fields fail validation under contract version 1.
 
 Run states may transition from `pending` to `running`, or directly to `cancelled`. A running run may become `succeeded`, `failed`, `cancelled`, or `indeterminate`. Those terminal states are immutable.
 
@@ -163,6 +171,8 @@ A `WorkflowEvidenceReference` binds evidence to:
 
 Model output is an untrusted claim. It is never embedded in the journal. Potentially sensitive content belongs in a size-bounded, access-controlled artifact store; the journal records only `WorkflowArtifactReference` metadata and digests. Output becomes gate-satisfying evidence only through the validation policy delivered by issue #13. Evidence from another scope, changed input, a superseded attempt, or an explicit invalidation cannot satisfy a transition.
 
+The complete workflow definition is durable reducer input, including invocation task text and repository identity. Task text therefore must be a trusted static instruction template: it must not contain credentials, scoped source excerpts, model output, or other secret/user payload. Dynamic scope content belongs behind canonical digests and protected artifact references. Hosts must treat the state root as sensitive operational data and apply their backup and retention policy; v0.1 does not delete audit journals automatically.
+
 ## Failure and recovery matrix
 
 | Condition | Required behavior |
@@ -177,9 +187,27 @@ Model output is an untrusted claim. It is never embedded in the journal. Potenti
 | Read-only child-process error after dispatch and confirmed termination | Settle as retryable `failed` within policy |
 | Mutating attempt interrupted or receiving a child-process error after dispatch | Settle as `indeterminate`, journal recovery requirement, and await explicit manual resolution |
 | Scope or input changes | Invalidate affected evidence |
-| Cancellation requested | Journal request, signal active work, ignore late success |
+| Cancellation requested | Journal request, settle an undispatched planned attempt, signal active work, and ignore late success |
+
+`deriveWorkflowRecoveryDecisions` never leaves a durable disposition implicit. It derives `recordStepReady` after `safeToRetry`, an indeterminate `recordStepSettlement` after `abort`, `recordAttemptCancellation` for a planned attempt in a cancelled run, and a cancelled step settlement once no attempt remains active.
 
 Snapshots may cache a validated journal prefix but never replace it. A snapshot names its contract version and last included sequence; replay continues from the next envelope.
+
+## Authoritative file journal
+
+`FileWorkflowJournalStore` requires an explicit absolute, pre-existing private `stateRoot`; the host must create it durably on a local filesystem outside pi sessions and repositories. It also requires an `authorizeActor` callback that authenticates host-owned actor metadata before an envelope can become authoritative. Schema validation only checks actor shape and never treats model- or workflow-supplied labels as identity. A SHA-256 digest of `runId` becomes the filename, so identifiers cannot traverse directories or disclose user text in listings.
+
+The store and exported replay API enforce these strict UTF-8 JSONL-equivalent bounds:
+
+| Limit | Value |
+| --- | ---: |
+| Serialized envelope | 1 MiB |
+| Journal | 64 MiB |
+| Records per journal | 4,096 |
+
+Loads and appends are serialized in-process and guarded across cooperating processes by an exclusive-create per-run lock file. Existing locks fail closed and are never broken automatically. The store replays the committed prefix through `reduceWorkflowJournalEnvelope`, validates the proposed next sequence, writes all bytes, calls `FileHandle.sync()`, and returns a durable commit receipt. External effects may begin only after that receipt.
+
+An unterminated final fragment is uncommitted and may be truncated and synchronized while locked. Newline-terminated malformed input, corruption before the tail, unsupported versions, and illegal transitions are permanent failures and are not skipped. `commitUncertain` requires exclusive reopen and replay; callers must not assume either success or failure.
 
 ## `/review` compatibility
 
@@ -197,9 +225,8 @@ Version 1 deliberately leaves the current `/review` prompt workflow unchanged:
 
 ## Downstream implementation ownership
 
-This contract intentionally leaves behavior to ordered follow-up issues:
+The reducer and durable journal are implemented by #11. Ordered follow-up ownership remains:
 
-- #11: reducer and durable journal implementation;
 - #12: canonical scope and evidence identity algorithms;
 - #13: evidence validation and retry execution;
 - #14: commands and progress presentation;

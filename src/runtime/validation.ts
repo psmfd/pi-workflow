@@ -29,8 +29,8 @@ const MAX_CAPABILITIES = 64;
 const MAX_IDENTIFIER_LENGTH = 256;
 const MAX_TASK_LENGTH = 100_000;
 const MAX_DESCRIPTION_LENGTH = 4_096;
-const MAX_REASON_LENGTH = 4_096;
 const MAX_ARTIFACT_BYTES = 64 * 1024 * 1024;
+const MAX_EVIDENCE_PER_SETTLEMENT = 256;
 const MAX_OBJECT_KEYS = 64;
 export const MAX_WORKFLOW_JOURNAL_ENVELOPE_BYTES = 1_048_576;
 
@@ -479,11 +479,100 @@ function validateArtifact(value: unknown, path: string, issues: ContractViolatio
   }
 }
 
+function validateAttemptIdentityAt(
+  value: UnknownRecord,
+  path: string,
+  issues: ContractViolation[],
+): void {
+  requireString(value["stepId"], `${path}.stepId`, issues);
+  requirePositiveInteger(value["attempt"], `${path}.attempt`, issues);
+  requireString(value["invocationId"], `${path}.invocationId`, issues);
+  requireString(value["inputDigest"], `${path}.inputDigest`, issues);
+}
+
 function validateAttemptIdentity(event: UnknownRecord, issues: ContractViolation[]): void {
-  requireString(event["stepId"], "$.event.stepId", issues);
-  requirePositiveInteger(event["attempt"], "$.event.attempt", issues);
-  requireString(event["invocationId"], "$.event.invocationId", issues);
-  requireString(event["inputDigest"], "$.event.inputDigest", issues);
+  validateAttemptIdentityAt(event, "$.event", issues);
+}
+
+function validateActor(value: unknown, path: string, issues: ContractViolation[]): void {
+  const actor = recordAt(value, path, issues);
+  if (actor === undefined) return;
+  rejectUnknownKeys(actor, ["kind", "actorId"], path, issues);
+  if (!isOneOf(actor["kind"], ["runtime", "operator"])) {
+    issues.push({ path: `${path}.kind`, message: "must be 'runtime' or 'operator'" });
+  }
+  requireString(actor["actorId"], `${path}.actorId`, issues);
+}
+
+function validateSettlement(value: unknown, path: string, issues: ContractViolation[]): void {
+  const settlement = recordAt(value, path, issues);
+  if (settlement === undefined) return;
+  const status = settlement["status"];
+  if (status === "succeeded") {
+    rejectUnknownKeys(settlement, ["status", "invocationId", "attempt", "inputDigest", "evidenceIds"], path, issues);
+    requireString(settlement["invocationId"], `${path}.invocationId`, issues);
+    requirePositiveInteger(settlement["attempt"], `${path}.attempt`, issues);
+    requireString(settlement["inputDigest"], `${path}.inputDigest`, issues);
+    const evidenceIds = validateStringArray(settlement["evidenceIds"], `${path}.evidenceIds`, issues, MAX_EVIDENCE_PER_SETTLEMENT);
+    if (evidenceIds !== undefined) {
+      if (evidenceIds.length === 0) issues.push({ path: `${path}.evidenceIds`, message: "must not be empty" });
+      if (new Set(evidenceIds).size !== evidenceIds.length) {
+        issues.push({ path: `${path}.evidenceIds`, message: "must contain unique values" });
+      }
+    }
+    return;
+  }
+  if (status === "failed" || status === "indeterminate") {
+    rejectUnknownKeys(settlement, ["status", "invocationId", "attempt", "inputDigest", "reason"], path, issues);
+    requireString(settlement["invocationId"], `${path}.invocationId`, issues);
+    requirePositiveInteger(settlement["attempt"], `${path}.attempt`, issues);
+    requireString(settlement["inputDigest"], `${path}.inputDigest`, issues);
+    const reasons = status === "failed"
+      ? ["attemptOutcome", "retryDeclined"]
+      : ["attemptOutcome", "recoveryAborted"];
+    if (!isOneOf(settlement["reason"], reasons)) {
+      issues.push({ path: `${path}.reason`, message: "is not a supported terminal reason" });
+    }
+    return;
+  }
+  if (status === "cancelled") {
+    rejectUnknownKeys(settlement, ["status", "reason"], path, issues);
+    if (!isOneOf(settlement["reason"], ["operatorRequested", "hostShutdown", "superseded"])) {
+      issues.push({ path: `${path}.reason`, message: "is not a supported cancellation reason" });
+    }
+    return;
+  }
+  if (status === "blocked") {
+    rejectUnknownKeys(settlement, ["status", "blockedBy"], path, issues);
+    requireString(settlement["blockedBy"], `${path}.blockedBy`, issues);
+    return;
+  }
+  issues.push({ path: `${path}.status`, message: "must be a terminal step status" });
+}
+
+function validateRecoveryResolution(value: unknown, path: string, event: UnknownRecord, issues: ContractViolation[]): void {
+  const resolution = recordAt(value, path, issues);
+  if (resolution === undefined) return;
+  if (resolution["kind"] === "outcomeConfirmed") {
+    rejectUnknownKeys(resolution, ["kind", "outcome"], path, issues);
+    const outcome = validateOutcome(resolution["outcome"], `${path}.outcome`, issues);
+    if (outcome !== undefined) {
+      if (outcome["invocationId"] !== event["invocationId"]) {
+        issues.push({ path: `${path}.outcome.invocationId`, message: "must match the event invocationId" });
+      }
+      if (outcome["attempt"] !== event["attempt"]) {
+        issues.push({ path: `${path}.outcome.attempt`, message: "must match the event attempt" });
+      }
+      if (outcome["inputDigest"] !== event["inputDigest"]) {
+        issues.push({ path: `${path}.outcome.inputDigest`, message: "must match the event inputDigest" });
+      }
+    }
+    return;
+  }
+  rejectUnknownKeys(resolution, ["kind"], path, issues);
+  if (!isOneOf(resolution["kind"], ["safeToRetry", "abort"])) {
+    issues.push({ path: `${path}.kind`, message: "is not a supported recovery resolution" });
+  }
 }
 
 function validateEvent(value: unknown, issues: ContractViolation[]): void {
@@ -562,13 +651,18 @@ function validateEvent(value: unknown, issues: ContractViolation[]): void {
     case "attemptRecoveryResolved":
       rejectUnknownKeys(event, [...common, "stepId", "attempt", "invocationId", "inputDigest", "resolution"], "$.event", issues);
       validateAttemptIdentity(event, issues);
-      if (!isOneOf(event["resolution"], ["effectConfirmed", "safeToRetry", "abort"])) {
-        issues.push({ path: "$.event.resolution", message: "is not a supported recovery resolution" });
-      }
+      validateRecoveryResolution(event["resolution"], "$.event.resolution", event, issues);
+      break;
+    case "stepSettled":
+      rejectUnknownKeys(event, [...common, "stepId", "settlement"], "$.event", issues);
+      requireString(event["stepId"], "$.event.stepId", issues);
+      validateSettlement(event["settlement"], "$.event.settlement", issues);
       break;
     case "cancellationRequested":
       rejectUnknownKeys(event, [...common, "reason"], "$.event", issues);
-      requireString(event["reason"], "$.event.reason", issues, MAX_REASON_LENGTH);
+      if (!isOneOf(event["reason"], ["operatorRequested", "hostShutdown", "superseded"])) {
+        issues.push({ path: "$.event.reason", message: "is not a supported cancellation reason" });
+      }
       break;
     case "runSettled":
       rejectUnknownKeys(event, [...common, "status"], "$.event", issues);
@@ -607,7 +701,7 @@ function inspectWorkflowJournalEnvelope(value: unknown): readonly ContractViolat
   const issues: ContractViolation[] = [];
   const envelope = recordAt(value, "$", issues);
   if (envelope === undefined) return issues;
-  rejectUnknownKeys(envelope, ["contractVersion", "runId", "sequence", "occurredAt", "event"], "$", issues);
+  rejectUnknownKeys(envelope, ["contractVersion", "runId", "sequence", "occurredAt", "actor", "event"], "$", issues);
   if (envelope["contractVersion"] !== WORKFLOW_RUNTIME_CONTRACT_VERSION) {
     issues.push({ path: "$.contractVersion", message: `must equal ${WORKFLOW_RUNTIME_CONTRACT_VERSION}` });
   }
@@ -616,6 +710,7 @@ function inspectWorkflowJournalEnvelope(value: unknown): readonly ContractViolat
   if (!isAbsoluteDateTime(envelope["occurredAt"])) {
     issues.push({ path: "$.occurredAt", message: "must be an absolute ISO-8601 timestamp" });
   }
+  validateActor(envelope["actor"], "$.actor", issues);
   validateEvent(envelope["event"], issues);
   return issues;
 }
