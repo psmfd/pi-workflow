@@ -1,8 +1,15 @@
-import { spawn } from "node:child_process";
+import {
+  spawn,
+  type ChildProcessByStdio,
+  type SpawnOptionsWithStdioTuple,
+  type StdioNull,
+  type StdioPipe,
+} from "node:child_process";
 import { constants, existsSync } from "node:fs";
 import { access, mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, delimiter, isAbsolute, join, resolve, sep } from "node:path";
+import type { Readable } from "node:stream";
 
 import {
   SUBAGENT_INVOCATION_CONTRACT_VERSION,
@@ -20,6 +27,7 @@ const DEFAULT_TERMINATION_GRACE_MS = 5_000;
 const DEFAULT_TERMINATION_CONFIRMATION_MS = 10_000;
 const MAX_TIMER_DELAY_MS = 2_147_483_647;
 const MAX_STDERR_BYTES = 256 * 1024;
+const PROCESS_ERROR_MESSAGE = "Child process reported an operational error";
 
 const BASE_ENVIRONMENT_KEYS = [
   "PATH",
@@ -67,10 +75,18 @@ export interface PiCommand {
   readonly prefixArgs?: readonly string[];
 }
 
+export type RootProcessSpawner = (
+  command: string,
+  args: readonly string[],
+  options: SpawnOptionsWithStdioTuple<StdioNull, StdioPipe, StdioPipe>,
+) => ChildProcessByStdio<null, Readable, Readable>;
+
 export interface PiProcessInvokerOptions {
   readonly piCommand?: PiCommand;
   readonly terminationGraceMs?: number;
   readonly terminationConfirmationMs?: number;
+  /** Host-owned root-process seam. Intended for deterministic lifecycle tests. */
+  readonly rootProcessSpawner?: RootProcessSpawner;
   /** Source environment. Only the documented allowlist is forwarded. */
   readonly environment?: Readonly<NodeJS.ProcessEnv>;
   /** Additional host-approved environment keys for custom providers. */
@@ -81,7 +97,7 @@ interface ProcessResult {
   readonly dispatched: boolean;
   readonly exitCode: number | null;
   readonly exitSignal: NodeJS.Signals | null;
-  readonly spawnError?: string;
+  readonly processError?: string;
   readonly termination: "cancelled" | "timedOut" | "protocolError" | undefined;
   readonly terminationConfirmed: boolean;
   readonly decoder: ReturnType<StrictJsonlDecoder["finish"]>;
@@ -503,6 +519,7 @@ export class PiProcessInvoker implements SubagentInvoker {
   readonly #piCommand: PiCommand;
   readonly #terminationGraceMs: number;
   readonly #terminationConfirmationMs: number;
+  readonly #rootProcessSpawner: RootProcessSpawner;
   readonly #environmentSource: Readonly<NodeJS.ProcessEnv>;
   readonly #allowedEnvironmentKeys: readonly string[];
 
@@ -511,6 +528,7 @@ export class PiProcessInvoker implements SubagentInvoker {
     this.#terminationGraceMs = options.terminationGraceMs ?? DEFAULT_TERMINATION_GRACE_MS;
     this.#terminationConfirmationMs =
       options.terminationConfirmationMs ?? DEFAULT_TERMINATION_CONFIRMATION_MS;
+    this.#rootProcessSpawner = options.rootProcessSpawner ?? spawn;
     this.#environmentSource = options.environment ?? process.env;
     this.#allowedEnvironmentKeys = options.allowedEnvironmentKeys ?? [];
   }
@@ -638,7 +656,7 @@ export class PiProcessInvoker implements SubagentInvoker {
         dispatched: false,
         exitCode: null,
         exitSignal: null,
-        spawnError: message,
+        processError: message,
         termination: undefined,
         terminationConfirmed: true,
         decoder: { events: [] },
@@ -671,14 +689,6 @@ export class PiProcessInvoker implements SubagentInvoker {
           retryable: false,
         },
       };
-    }
-    if (processResult.spawnError !== undefined) {
-      return failure(request, evidence, {
-        code: "spawnFailed",
-        phase: "dispatch",
-        message: processResult.spawnError,
-        retryable: true,
-      });
     }
     if (!processResult.terminationConfirmed) {
       return {
@@ -739,6 +749,22 @@ export class PiProcessInvoker implements SubagentInvoker {
         evidence,
         acknowledged: true,
       };
+    }
+    if (processResult.processError !== undefined) {
+      if (!processResult.dispatched) {
+        return failure(request, evidence, {
+          code: "spawnFailed",
+          phase: "dispatch",
+          message: processResult.processError,
+          retryable: true,
+        });
+      }
+      return uncertainMutation(request, evidence, {
+        code: "processFailed",
+        phase: "execution",
+        message: processResult.processError,
+        retryable: true,
+      });
     }
     if (processResult.decoder.error !== undefined) {
       return uncertainMutation(request, evidence, {
@@ -829,7 +855,7 @@ export class PiProcessInvoker implements SubagentInvoker {
 
     const decoder = new StrictJsonlDecoder();
     let stderr = "";
-    let spawnError: string | undefined;
+    let processError: string | undefined;
     let termination: "cancelled" | "timedOut" | "protocolError" | undefined;
     let terminationConfirmed = true;
     let graceTimer: NodeJS.Timeout | undefined;
@@ -838,7 +864,7 @@ export class PiProcessInvoker implements SubagentInvoker {
     let cancelDeadline = () => {};
     let settleExit: ((value: { code: number | null; signal: NodeJS.Signals | null }) => void) | undefined;
 
-    const child = spawn(executable, args, {
+    const child = this.#rootProcessSpawner(executable, args, {
       cwd,
       shell: false,
       detached: process.platform !== "win32",
@@ -846,6 +872,8 @@ export class PiProcessInvoker implements SubagentInvoker {
       env: { ...environment },
     });
 
+    let dispatched = false;
+    let closed = false;
     let observedExit: { code: number | null; signal: NodeJS.Signals | null } | undefined;
     let forceStarted = false;
     let forceCompleted = false;
@@ -953,7 +981,13 @@ export class PiProcessInvoker implements SubagentInvoker {
     };
 
     const terminate = (reason: "cancelled" | "timedOut" | "protocolError") => {
-      if (termination !== undefined || child.exitCode !== null || child.signalCode !== null) return;
+      if (
+        termination !== undefined ||
+        processError !== undefined ||
+        closed ||
+        child.exitCode !== null ||
+        child.signalCode !== null
+      ) return;
       termination = reason;
       if (process.platform === "win32" || reason === "protocolError" || !signalTree("SIGTERM")) {
         forceTree();
@@ -962,6 +996,9 @@ export class PiProcessInvoker implements SubagentInvoker {
       graceTimer = setTimeout(forceTree, this.#terminationGraceMs);
     };
 
+    child.once("spawn", () => {
+      dispatched = true;
+    });
     child.stdout.on("data", (chunk: Buffer) => {
       decoder.push(chunk);
       if (decoder.error !== undefined) terminate("protocolError");
@@ -969,8 +1006,16 @@ export class PiProcessInvoker implements SubagentInvoker {
     child.stderr.on("data", (chunk: Buffer) => {
       stderr = boundedText(stderr + chunk.toString("utf8"), MAX_STDERR_BYTES, "stderr");
     });
-    child.on("error", (error) => {
-      spawnError = error.message;
+    child.on("error", () => {
+      if (processError !== undefined || termination !== undefined || closed) return;
+      processError = PROCESS_ERROR_MESSAGE;
+      if (dispatched) {
+        forceTree();
+        return;
+      }
+      child.stdout.destroy();
+      child.stderr.destroy();
+      settleExit?.({ code: null, signal: null });
     });
 
     const abortListener = () => terminate("cancelled");
@@ -988,8 +1033,11 @@ export class PiProcessInvoker implements SubagentInvoker {
         resolveExit(value);
       };
       child.once("close", (code, signal) => {
+        closed = true;
         observedExit = { code, signal };
-        if (termination === undefined || forceCompleted) settleExit?.(observedExit);
+        if ((termination === undefined && processError === undefined) || forceCompleted) {
+          settleExit?.(observedExit);
+        }
       });
     });
 
@@ -1000,14 +1048,14 @@ export class PiProcessInvoker implements SubagentInvoker {
     if (groupPollTimer !== undefined) clearTimeout(groupPollTimer);
 
     return {
-      dispatched: true,
+      dispatched,
       exitCode: exit.code,
       exitSignal: exit.signal,
       termination,
       terminationConfirmed,
       decoder: decoder.finish(),
       stderr,
-      ...(spawnError === undefined ? {} : { spawnError }),
+      ...(processError === undefined ? {} : { processError }),
     };
   }
 

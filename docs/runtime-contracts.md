@@ -174,7 +174,8 @@ Model output is an untrusted claim. It is never embedded in the journal. Potenti
 | Attempt deadline already expired | Settle without dispatch; do not reset deadline |
 | Terminal outcome already journaled | Replay it; never invoke again |
 | Read-only attempt interrupted after start | Journal `attemptRecoveryRequired`; policy may resolve it as safe to retry |
-| Mutating attempt interrupted after start | Journal recovery requirement and await explicit manual resolution |
+| Read-only child-process error after dispatch and confirmed termination | Settle as retryable `failed` within policy |
+| Mutating attempt interrupted or receiving a child-process error after dispatch | Settle as `indeterminate`, journal recovery requirement, and await explicit manual resolution |
 | Scope or input changes | Invalidate affected evidence |
 | Cancellation requested | Journal request, signal active work, ignore late success |
 

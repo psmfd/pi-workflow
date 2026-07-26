@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { spawn } from "node:child_process";
 import { access, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
@@ -9,6 +10,7 @@ import {
   PiProcessInvoker,
   SUBAGENT_INVOCATION_CONTRACT_VERSION,
   type InvocationRequest,
+  type RootProcessSpawner,
 } from "../src/index.js";
 import { StrictJsonlDecoder } from "../src/subagent/jsonl.js";
 
@@ -30,7 +32,13 @@ function request(task: string, overrides: Partial<InvocationRequest> = {}): Invo
   };
 }
 
-function invoker(options: { terminationGraceMs?: number } = {}): PiProcessInvoker {
+function invoker(
+  options: {
+    terminationGraceMs?: number;
+    terminationConfirmationMs?: number;
+    rootProcessSpawner?: RootProcessSpawner;
+  } = {},
+): PiProcessInvoker {
   return new PiProcessInvoker({
     piCommand: { command: process.execPath, prefixArgs: [fixture] },
     environment: {
@@ -39,6 +47,64 @@ function invoker(options: { terminationGraceMs?: number } = {}): PiProcessInvoke
     },
     ...options,
   });
+}
+
+function preSpawnErrorSpawner(): RootProcessSpawner {
+  return (_command, _args, options) =>
+    spawn(join(tmpdir(), "pi-workflow-injected-command-does-not-exist"), [], options);
+}
+
+function errorAfterSpawnSpawner(options: {
+  beforeError?: () => void;
+  afterError?: () => void;
+  delayMs?: number;
+} = {}): RootProcessSpawner {
+  return (command, args, spawnOptions) => {
+    const child = spawn(command, args, spawnOptions);
+    child.once("spawn", () => {
+      setTimeout(() => {
+        options.beforeError?.();
+        const credentialPrefix = ["Bear", "er"].join("");
+        child.emit("error", new Error(`${credentialPrefix} must-not-survive`));
+        options.afterError?.();
+      }, options.delayMs ?? 0);
+    });
+    return child;
+  };
+}
+
+function errorAfterCloseSpawner(afterClose: () => void): RootProcessSpawner {
+  return (command, args, options) => {
+    const child = spawn(command, args, options);
+    child.once("close", () => {
+      queueMicrotask(() => {
+        child.emit("error", new Error("injected late process error"));
+        afterClose();
+      });
+    });
+    return child;
+  };
+}
+
+function errorAfterMarkerSpawner(marker: string): RootProcessSpawner {
+  return (command, args, options) => {
+    const child = spawn(command, args, options);
+    child.once("spawn", () => {
+      void (async () => {
+        for (let attempt = 0; attempt < 100; attempt += 1) {
+          try {
+            await access(marker);
+            child.emit("error", new Error("injected process error after descendant start"));
+            return;
+          } catch {
+            await new Promise((resolveDelay) => setTimeout(resolveDelay, 5));
+          }
+        }
+        child.emit("error", new Error("injected process error before descendant start"));
+      })();
+    });
+    return child;
+  };
 }
 
 void test("invokes the supported ephemeral pi JSON command and captures evidence", async () => {
@@ -147,6 +213,106 @@ void test("classifies spawn failures without throwing", async () => {
 
   assert.equal(outcome.status, "failed");
   if (outcome.status === "failed") assert.equal(outcome.error.code, "spawnFailed");
+});
+
+void test("keeps injected pre-spawn process errors retryable for mutating work", async () => {
+  const outcome = await invoker({ rootProcessSpawner: preSpawnErrorSpawner() }).invoke(
+    request("success", { execution: "mutating" }),
+  );
+
+  assert.equal(outcome.status, "failed");
+  if (outcome.status !== "failed") return;
+  assert.equal(outcome.error.code, "spawnFailed");
+  assert.equal(outcome.error.phase, "dispatch");
+  assert.equal(outcome.error.retryable, true);
+});
+
+void test("classifies post-dispatch process errors by execution class", async (context) => {
+  for (const [execution, expectedStatus, expectedRetryable] of [
+    ["readOnly", "failed", true],
+    ["mutating", "indeterminate", false],
+  ] as const) {
+    await context.test(execution, async () => {
+      const outcome = await invoker({ rootProcessSpawner: errorAfterSpawnSpawner() }).invoke(
+        request("hang", { execution }),
+      );
+      assert.equal(outcome.status, expectedStatus);
+      if (outcome.status !== "failed" && outcome.status !== "indeterminate") return;
+      assert.equal(outcome.error.code, "processFailed");
+      assert.equal(outcome.error.phase, "execution");
+      assert.equal(outcome.error.retryable, expectedRetryable);
+      assert.doesNotMatch(outcome.error.message, /must-not-survive/);
+      assert.doesNotMatch(JSON.stringify(outcome.evidence), /must-not-survive/);
+    });
+  }
+});
+
+void test("preserves cancellation precedence over a later process error", async () => {
+  const controller = new AbortController();
+  const outcome = await invoker({
+    terminationGraceMs: 20,
+    rootProcessSpawner: errorAfterSpawnSpawner({ beforeError: () => controller.abort() }),
+  }).invoke(request("ignore-term", { execution: "mutating" }), { signal: controller.signal });
+
+  assert.equal(outcome.status, "indeterminate");
+  if (outcome.status !== "indeterminate") return;
+  assert.equal(outcome.error.code, "executionUncertain");
+  assert.equal(outcome.error.retryable, false);
+});
+
+void test("preserves timeout precedence over a later process error", async () => {
+  const deadlineAt = new Date(Date.now() + 100).toISOString();
+  const outcome = await invoker({
+    terminationGraceMs: 100,
+    rootProcessSpawner: errorAfterSpawnSpawner({ delayMs: 110 }),
+  }).invoke(request("ignore-term", { execution: "mutating" }), { deadlineAt });
+
+  assert.equal(outcome.status, "indeterminate");
+  if (outcome.status !== "indeterminate") return;
+  assert.equal(outcome.error.code, "executionUncertain");
+  assert.equal(outcome.error.retryable, false);
+});
+
+void test("keeps a process error authoritative over later cancellation", async () => {
+  const controller = new AbortController();
+  const outcome = await invoker({
+    rootProcessSpawner: errorAfterSpawnSpawner({ afterError: () => controller.abort() }),
+  }).invoke(request("hang", { execution: "mutating" }), { signal: controller.signal });
+
+  assert.equal(outcome.status, "indeterminate");
+  if (outcome.status !== "indeterminate") return;
+  assert.equal(outcome.error.code, "processFailed");
+  assert.equal(outcome.error.retryable, false);
+});
+
+void test("ignores process errors and cancellation observed after close", async () => {
+  const controller = new AbortController();
+  const outcome = await invoker({
+    rootProcessSpawner: errorAfterCloseSpawner(() => controller.abort()),
+  }).invoke(request("success"), { signal: controller.signal });
+
+  assert.equal(outcome.status, "succeeded");
+});
+
+void test("confirms descendant termination before returning a process error", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "pi-workflow-process-error-tree-"));
+  const ready = join(directory, "ready");
+  const survivor = join(directory, "survivor");
+  const payload = Buffer.from(JSON.stringify({ ready, survivor })).toString("base64url");
+  try {
+    const outcome = await invoker({
+      terminationGraceMs: 20,
+      rootProcessSpawner: errorAfterMarkerSpawner(ready),
+    }).invoke(request(`tree:${payload}`));
+
+    assert.equal(outcome.status, "failed");
+    if (outcome.status === "failed") assert.equal(outcome.error.code, "processFailed");
+    await access(ready);
+    await new Promise((resolveDelay) => setTimeout(resolveDelay, 1_000));
+    await assert.rejects(access(survivor));
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
 });
 
 void test("rejects invalid requests before dispatch", async () => {
